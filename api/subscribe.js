@@ -1,3 +1,5 @@
+import crypto from 'crypto'
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
@@ -18,49 +20,49 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Server configuration error.' })
   }
 
-  const url = `https://${SERVER_PREFIX}.api.mailchimp.com/3.0/lists/${AUDIENCE_ID}/members`
+  const subscriberHash = crypto
+    .createHash('md5')
+    .update(email.toLowerCase().trim())
+    .digest('hex')
+
+  const baseUrl = `https://${SERVER_PREFIX}.api.mailchimp.com/3.0/lists/${AUDIENCE_ID}/members`
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `apikey ${API_KEY}`,
+  }
 
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `apikey ${API_KEY}`,
-      },
+    // PUT upserts: creates if new, updates if existing
+    const response = await fetch(`${baseUrl}/${subscriberHash}`, {
+      method: 'PUT',
+      headers,
       body: JSON.stringify({
         email_address: email,
-        status: 'subscribed',
-        tags: [archetype],
+        status_if_new: 'subscribed',
       }),
     })
 
-    const data = await response.json()
-
     if (!response.ok) {
-      // Member already exists is not a failure for our purposes
-      if (data.title === 'Member Exists') {
-        // Update their tags instead
-        const subscriberHash = data.detail.match(/[a-f0-9]{32}/)?.[0]
-        if (subscriberHash) {
-          await fetch(
-            `https://${SERVER_PREFIX}.api.mailchimp.com/3.0/lists/${AUDIENCE_ID}/members/${subscriberHash}/tags`,
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `apikey ${API_KEY}`,
-              },
-              body: JSON.stringify({
-                tags: [{ name: archetype, status: 'active' }],
-              }),
-            }
-          )
-        }
-        return res.status(200).json({ success: true })
-      }
-
-      console.error('Mailchimp error:', data)
+      const data = await response.json()
+      console.error('Mailchimp upsert error:', data)
       return res.status(400).json({ error: 'Could not subscribe. Please try again.' })
+    }
+
+    // Add tags via the tags endpoint (works for both new and existing)
+    const tagResponse = await fetch(`${baseUrl}/${subscriberHash}/tags`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        tags: [
+          { name: archetype, status: 'active' },
+          { name: 'Soul Archetype Quiz', status: 'active' },
+        ],
+      }),
+    })
+
+    if (!tagResponse.ok) {
+      const tagData = await tagResponse.json()
+      console.error('Mailchimp tag error:', tagData)
     }
 
     return res.status(200).json({ success: true })
